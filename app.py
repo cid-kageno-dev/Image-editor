@@ -6,6 +6,7 @@ import urllib.parse
 from flask import Flask, render_template, request, flash
 from PIL import Image
 from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
 
 load_dotenv(override=True)
 
@@ -13,43 +14,32 @@ app = Flask(__name__)
 app.secret_key = "super_secret_key"
 
 # --- CONFIGURATION ---
-# 1. Primary: Hugging Face (High Quality, Rate Limited)
-HF_API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-dev"
-HF_API_KEY = os.getenv("HF_API_KEY")
+HF_TOKEN = os.getenv("HF_API_KEY")
 
-# 2. Fallback: Pollinations.ai (Free, Unlimited, No Key)
+# Models
+MODEL_GENERATE = "black-forest-labs/FLUX.1-dev"
+MODEL_EDIT = "timbrooks/instruct-pix2pix" 
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
 
-def process_image(image_bytes):
-    """Helper to convert bytes to base64 for HTML display"""
-    return base64.b64encode(image_bytes).decode("utf-8")
+# Initialize Client (Safe even if token is missing, will error later)
+client = InferenceClient(token=HF_TOKEN)
 
-def query_huggingface(prompt):
-    """Attempts to generate using Hugging Face"""
-    if not HF_API_KEY:
-        raise Exception("HF_API_KEY missing")
-    
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    payload = {"inputs": prompt}
-    response = requests.post(HF_API_URL, headers=headers, json=payload)
-    
-    # If HF returns an error (like 503 loading or 429 rate limit), raise exception to trigger fallback
-    if response.status_code != 200:
-        raise Exception(f"HF Status {response.status_code}: {response.text}")
-        
-    return response.content
+def process_image(pil_image):
+    """Convert PIL Image to Base64"""
+    buffered = io.BytesIO()
+    pil_image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return img_str
 
-def query_pollinations(prompt):
+def fallback_pollinations(prompt):
     """Fallback generator using Pollinations.ai"""
-    # Safe URL encoding for the prompt
     encoded_prompt = urllib.parse.quote(prompt)
     url = f"{POLLINATIONS_URL}{encoded_prompt}?nologo=true"
-    
     response = requests.get(url)
     if response.status_code == 200:
-        return response.content
+        return Image.open(io.BytesIO(response.content))
     else:
-        raise Exception(f"Pollinations Status {response.status_code}")
+        raise Exception(f"Pollinations Error {response.status_code}")
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -59,37 +49,61 @@ def index():
 
     if request.method == "POST":
         prompt_text = request.form.get("prompt")
+        action = request.form.get("action")
         
         if not prompt_text:
             flash("Please enter a prompt!", "error")
         else:
-            # --- ATTEMPT 1: PRIMARY (Hugging Face) ---
             try:
-                print(f"🚀 Trying Primary (Hugging Face) for: {prompt_text}")
-                image_bytes = query_huggingface(prompt_text)
-                
-                # Verify it's a real image
-                Image.open(io.BytesIO(image_bytes)) 
-                generated_image = process_image(image_bytes)
-                backend_used = "Hugging Face (FLUX.1)"
-                
-            except Exception as e_primary:
-                print(f"⚠️ Primary Failed: {e_primary}")
-                
-                # --- ATTEMPT 2: FALLBACK (Pollinations) ---
-                try:
-                    print(f"🍌 Switching to Fallback (Pollinations)...")
-                    image_bytes = query_pollinations(prompt_text)
-                    
-                    # Verify it's a real image
-                    Image.open(io.BytesIO(image_bytes))
-                    generated_image = process_image(image_bytes)
-                    backend_used = "Pollinations.ai (Fallback)"
-                    flash(f"Primary server busy. Generated using {backend_used}.", "info")
-                    
-                except Exception as e_fallback:
-                    print(f"❌ Fallback Failed: {e_fallback}")
-                    flash(f"All generators failed. HF Error: {e_primary} | Fallback Error: {e_fallback}", "error")
+                # --- ACTION: GENERATE ---
+                if action == "generate":
+                    try:
+                        print(f"🎨 Generating with HF ({MODEL_GENERATE})...")
+                        # Primary: Hugging Face
+                        image = client.text_to_image(prompt_text, model=MODEL_GENERATE)
+                        generated_image = process_image(image)
+                        backend_used = "Hugging Face (FLUX.1)"
+                        
+                    except Exception as e_hf:
+                        print(f"⚠️ HF Gen Failed: {e_hf}")
+                        # Fallback: Pollinations
+                        try:
+                            print(f"🍌 Switching to Pollinations...")
+                            image = fallback_pollinations(prompt_text)
+                            generated_image = process_image(image)
+                            backend_used = "Pollinations.ai (Fallback)"
+                            flash("Primary server busy. Used Fallback.", "info")
+                        except Exception as e_poll:
+                            flash(f"All generators failed. {e_poll}", "error")
+
+                # --- ACTION: EDIT ---
+                elif action == "edit":
+                    uploaded_file = request.files.get("init_image")
+                    if not uploaded_file or uploaded_file.filename == '':
+                        flash("Upload an image to edit!", "error")
+                    else:
+                        try:
+                            print(f"✏️ Editing with HF ({MODEL_EDIT})...")
+                            input_image = Image.open(uploaded_file).convert("RGB")
+                            
+                            # Use Image-to-Image (InstructPix2Pix)
+                            # Note: image_to_image works best for this model pipeline
+                            image = client.image_to_image(
+                                prompt=prompt_text,
+                                image=input_image,
+                                model=MODEL_EDIT,
+                                guidance_scale=7.5, 
+                                image_guidance_scale=1.5
+                            )
+                            generated_image = process_image(image)
+                            backend_used = "Hugging Face (InstructPix2Pix)"
+                            
+                        except Exception as e_edit:
+                            print(f"❌ Edit Failed: {e_edit}")
+                            flash(f"Editing failed. The free server might be overloaded. Error: {e_edit}", "error")
+
+            except Exception as e:
+                flash(f"System Error: {e}", "error")
 
     return render_template("index.html", generated_image=generated_image, prompt=prompt_text, backend=backend_used)
 
