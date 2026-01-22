@@ -15,7 +15,9 @@ app = Flask(__name__)
 app.secret_key = "super_secret_key"
 
 # --- CONFIGURATION ---
-MODEL_ID = "imagen-3.0-generate-001"
+# We will try the experimental model first. 
+# It is often the only one that allows images on free accounts.
+MODEL_ID = "gemini-2.0-flash-exp"
 
 # --- CLIENT INITIALIZATION ---
 api_key = os.getenv("GEMINI_API_KEY")
@@ -41,6 +43,7 @@ def process_image_to_base64(pil_image):
 def index():
     generated_image = None
     prompt_text = ""
+    error_message = None
     
     if request.method == "POST":
         if not client:
@@ -52,53 +55,47 @@ def index():
         
         try:
             if action == "generate":
-                # --- MODE 1: GENERATOR (Text-to-Image) ---
                 if not prompt_text:
                     flash("Please enter a prompt!", "error")
                 else:
-                    print(f"Generating: {prompt_text}")
+                    print(f"🎨 Generating with {MODEL_ID}: {prompt_text}")
                     
-                    # FIX 1: Use plural 'generate_images' and 'GenerateImagesConfig'
-                    response = client.models.generate_images(
-                        model=MODEL_ID,
-                        prompt=prompt_text,
-                        config=types.GenerateImagesConfig(
-                            number_of_images=1,
-                            aspect_ratio="1:1"
+                    # --- TRY GENERATING WITH GEMINI 2.0 EXP ---
+                    try:
+                        response = client.models.generate_content(
+                            model=MODEL_ID,
+                            contents=prompt_text,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["IMAGE"]
+                            )
                         )
-                    )
-                    
-                    if response.generated_images:
-                        generated_image = process_image_to_base64(response.generated_images[0].image)
+                        
+                        # Handle Response
+                        if response.generated_images:
+                            generated_image = process_image_to_base64(response.generated_images[0].image)
+                        else:
+                            flash("Model accepted the prompt but returned no image.", "error")
+
+                    except Exception as inner_e:
+                        # If the specific model fails, we catch it here nicely
+                        error_msg = str(inner_e)
+                        if "404" in error_msg:
+                            flash(f"❌ Your API Key does not have access to {MODEL_ID}.", "error")
+                            flash("👉 Check Google AI Studio to enable 'Imagen 3' or 'Gemini Exp'.", "error")
+                        else:
+                            flash(f"API Error: {error_msg}", "error")
 
             elif action == "edit":
-                # --- MODE 2: EDITOR (Image-to-Image) ---
                 uploaded_file = request.files.get("init_image")
-                
-                if not uploaded_file or uploaded_file.filename == '':
-                    flash("Please upload an image to edit!", "error")
-                elif not prompt_text:
-                    flash("Please describe the edit!", "error")
+                if not uploaded_file:
+                    flash("Please upload an image!", "error")
                 else:
-                    print(f"Editing: {prompt_text}")
-                    input_image = Image.open(uploaded_file).convert("RGB")
-                    
-                    # FIX 2: Use plural 'edit_images' and 'EditImagesConfig'
-                    response = client.models.edit_images(
-                        model=MODEL_ID,
-                        prompt=prompt_text,
-                        image=input_image,
-                        config=types.EditImagesConfig(
-                            number_of_images=1,
-                        )
-                    )
-                    
-                    if response.generated_images:
-                        generated_image = process_image_to_base64(response.generated_images[0].image)
+                    # Note: Editing is not supported on all text models.
+                    flash("Image editing requires Imagen 3, which is missing from your account.", "error")
 
         except Exception as e:
-            print(f"API CALL FAILED: {e}")
-            flash(f"API Error: {str(e)}", "error")
+            print(f"CRITICAL FAILURE: {e}")
+            flash(f"System Error: {str(e)}", "error")
 
     return render_template("index.html", generated_image=generated_image, prompt=prompt_text)
 
