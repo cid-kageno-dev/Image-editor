@@ -1,26 +1,48 @@
 import os
 import base64
 import io
+import sys # Added for debug exit
 from flask import Flask, render_template, request, flash
 from google import genai
 from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# 1. Force load .env file (helps if it's in a different folder)
+load_dotenv(override=True)
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"  # Change this for production
+app.secret_key = "super_secret_key"
+
+# 2. DEBUG: Check API Key immediately
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    print("❌ CRITICAL ERROR: GEMINI_API_KEY not found in environment variables.")
+    print("👉 Check your .env file or Render Environment settings.")
+    # For local testing ONLY, you can uncomment the line below and paste your key:
+    # api_key = "AIzaSy..." 
+    
+    # If we are on Render, we don't want to crash, but the app won't work
+else:
+    print(f"✅ API Key found: {api_key[:5]}********")
 
 # Configure Gemini Client
-# "Nano Banana" is officially the 'gemini-2.5-flash-image' model
 MODEL_ID = "gemini-2.5-flash-image"
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Initialize Client with error handling
+try:
+    if api_key:
+        client = genai.Client(api_key=api_key)
+    else:
+        # Create a dummy client to prevent startup crash, 
+        # but it will fail when you try to generate images.
+        client = None 
+except Exception as e:
+    print(f"Error initializing client: {e}")
+    client = None
 
 def process_image_to_base64(pil_image):
-    """Helper to convert PIL Image to Base64 string for HTML display"""
     buffered = io.BytesIO()
     pil_image.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -32,46 +54,42 @@ def index():
     prompt_text = ""
     
     if request.method == "POST":
+        # Check if client is ready
+        if not client:
+            flash("Server Error: API Key missing. Check server logs.", "error")
+            return render_template("index.html", generated_image=None, prompt="")
+
         action = request.form.get("action")
         prompt_text = request.form.get("prompt")
         
         try:
             if action == "generate":
-                # --- MODE 1: Text-to-Image (Generator) ---
                 if not prompt_text:
                     flash("Please enter a prompt!", "error")
                 else:
+                    print(f"Generating with prompt: {prompt_text}")
                     response = client.models.generate_image(
                         model=MODEL_ID,
                         prompt=prompt_text,
                         config=types.GenerateImageConfig(
                             number_of_images=1,
-                            aspect_ratio="1:1" # Options: 1:1, 3:4, 4:3, 16:9, 9:16
+                            aspect_ratio="1:1"
                         )
                     )
-                    # The response contains the image object directly
                     if response.generated_images:
                         generated_image = process_image_to_base64(response.generated_images[0].image)
 
             elif action == "edit":
-                # --- MODE 2: Image+Text-to-Image (Editor) ---
                 uploaded_file = request.files.get("init_image")
                 
                 if not uploaded_file or uploaded_file.filename == '':
                     flash("Please upload an image to edit!", "error")
                 elif not prompt_text:
-                    flash("Please describe the edit (e.g., 'Make it snow')!", "error")
+                    flash("Please describe the edit!", "error")
                 else:
-                    # Open the uploaded image with PIL
+                    print(f"Editing image with prompt: {prompt_text}")
                     input_image = Image.open(uploaded_file).convert("RGB")
                     
-                    # Gemini 2.5 Flash Image uses the prompt to guide the edit of the input image
-                    # Note: We pass the image as a separate argument or part of the inputs depending on the SDK version.
-                    # In the latest google-genai SDK for images, editing is often a prompt variation.
-                    # However, strictly speaking, `generate_images` usually takes text. 
-                    # For editing, we use the `edit_image` method if available, or pass image in contents.
-                    
-                    # Current Best Practice for Edit with Gemini 2.5 Flash Image:
                     response = client.models.edit_image(
                         model=MODEL_ID,
                         prompt=prompt_text,
@@ -85,10 +103,12 @@ def index():
                         generated_image = process_image_to_base64(response.generated_images[0].image)
 
         except Exception as e:
+            # Print the full error to the terminal so you can see it
+            print(f"API CALL FAILED: {e}")
             flash(f"API Error: {str(e)}", "error")
-            print(f"Error: {e}")
 
     return render_template("index.html", generated_image=generated_image, prompt=prompt_text)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+    
