@@ -15,7 +15,7 @@ app = Flask(__name__)
 app.secret_key = "super_secret_key"
 
 # --- CONFIGURATION ---
-MODEL_ID = "gemini-2.5-flash-image"
+MODEL_ID = "imagen-3.0-generate-001"
 
 # --- CLIENT INITIALIZATION ---
 api_key = os.getenv("GEMINI_API_KEY")
