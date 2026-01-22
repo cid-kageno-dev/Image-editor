@@ -12,9 +12,9 @@ app = Flask(__name__)
 app.secret_key = "super_secret_key"
 
 # --- CONFIGURATION ---
-# We use FLUX.1-dev, currently one of the best open models
-API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
-HF_API_KEY = os.getenv("HF_API_KEY") # Put your "hf_..." key in .env
+# UPDATED URL: Using the new 'router' domain required by Hugging Face
+API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-dev"
+HF_API_KEY = os.getenv("HF_API_KEY")
 
 def query_huggingface(prompt):
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
@@ -42,12 +42,12 @@ def index():
                 print(f"🎨 Generating: {prompt_text}")
                 image_bytes = query_huggingface(prompt_text)
                 
-                # Verify we got an image back (not an error JSON)
+                # Check if we got a valid image back
                 try:
-                    Image.open(io.BytesIO(image_bytes)) # Test if it's an image
+                    Image.open(io.BytesIO(image_bytes)) 
                     generated_image = process_image(image_bytes)
-                except:
-                    # If PIL cannot open it, it's likely an error message from the API
+                except Exception:
+                    # If PIL fails, it's likely an error message from the API
                     error_json = image_bytes.decode('utf-8')
                     flash(f"API Error: {error_json}", "error")
                     
