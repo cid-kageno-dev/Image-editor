@@ -1,9 +1,8 @@
 import os
-import base64
 import io
+import base64
+import requests
 from flask import Flask, render_template, request, flash
-from google import genai
-from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 
@@ -12,75 +11,48 @@ load_dotenv(override=True)
 app = Flask(__name__)
 app.secret_key = "super_secret_key"
 
-# --- THE ONLY MODEL THAT WORKS FOR FREE IMAGES ---
-# Do not change this to "gemini-2.5-flash" (Text only)
-# Do not change this to "imagen-3.0" (You don't have access)
-MODEL_ID = "gemini-2.0-flash-exp"
+# --- CONFIGURATION ---
+# We use FLUX.1-dev, currently one of the best open models
+API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
+HF_API_KEY = os.getenv("HF_API_KEY") # Put your "hf_..." key in .env
 
-api_key = os.getenv("GEMINI_API_KEY")
-client = None
+def query_huggingface(prompt):
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+    payload = {"inputs": prompt}
+    response = requests.post(API_URL, headers=headers, json=payload)
+    return response.content
 
-if api_key:
-    try:
-        client = genai.Client(api_key=api_key)
-    except Exception as e:
-        print(f"Error: {e}")
-
-def process_image_to_base64(pil_image):
-    buffered = io.BytesIO()
-    pil_image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return img_str
+def process_image(image_bytes):
+    return base64.b64encode(image_bytes).decode("utf-8")
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     generated_image = None
     prompt_text = ""
-    
-    if request.method == "POST":
-        if not client:
-            flash("API Key missing!", "error")
-            return render_template("index.html", generated_image=None, prompt="")
 
-        action = request.form.get("action")
+    if request.method == "POST":
         prompt_text = request.form.get("prompt")
         
-        try:
-            if action == "generate":
-                if not prompt_text:
-                    flash("Enter a prompt!", "error")
-                else:
-                    print(f"🎨 Generating with {MODEL_ID}...")
+        if not HF_API_KEY:
+            flash("Error: HF_API_KEY is missing in .env", "error")
+        elif not prompt_text:
+            flash("Please enter a prompt!", "error")
+        else:
+            try:
+                print(f"🎨 Generating: {prompt_text}")
+                image_bytes = query_huggingface(prompt_text)
+                
+                # Verify we got an image back (not an error JSON)
+                try:
+                    Image.open(io.BytesIO(image_bytes)) # Test if it's an image
+                    generated_image = process_image(image_bytes)
+                except:
+                    # If PIL cannot open it, it's likely an error message from the API
+                    error_json = image_bytes.decode('utf-8')
+                    flash(f"API Error: {error_json}", "error")
                     
-                    # Gemini 2.0 EXP uses 'generate_content', NOT 'generate_images'
-                    response = client.models.generate_content(
-                        model=MODEL_ID,
-                        contents=prompt_text,
-                        config=types.GenerateContentConfig(
-                            response_modalities=["IMAGE"]
-                        )
-                    )
-                    
-                    if response.generated_images:
-                        generated_image = process_image_to_base64(response.generated_images[0].image)
-                    else:
-                        flash("Model returned no image.", "error")
-
-            elif action == "edit":
-                 flash("Editing is temporarily disabled to fix the Generator first.", "error")
-
-        except Exception as e:
-            error_msg = str(e)
-            print(f"API ERROR: {error_msg}")
-            
-            # CUSTOM ERROR MESSAGES
-            if "404" in error_msg:
-                flash(f"❌ Your API Key cannot access '{MODEL_ID}'.", "error")
-                flash("💡 SOLUTION: Go to Google AI Studio > Settings > Billing and add a card (Free tier still needs verification).", "error")
-            elif "400" in error_msg:
-                flash(f"❌ Model '{MODEL_ID}' rejected the request.", "error")
-            else:
-                flash(f"Error: {error_msg}", "error")
+            except Exception as e:
+                flash(f"System Error: {str(e)}", "error")
 
     return render_template("index.html", generated_image=generated_image, prompt=prompt_text)
 
