@@ -8,38 +8,30 @@ from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 
-# 1. Force load .env file (useful for local development)
+# 1. Force load .env file
 load_dotenv(override=True)
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"  # Change this for production
+app.secret_key = "super_secret_key"
 
 # --- CONFIGURATION ---
-# The official model ID for Nano Banana
 MODEL_ID = "gemini-2.5-flash-image"
 
-# --- CLIENT INITIALIZATION & DEBUGGING ---
+# --- CLIENT INITIALIZATION ---
 api_key = os.getenv("GEMINI_API_KEY")
 
-# Check if API Key exists and print status to console/logs
 if not api_key:
-    print("❌ CRITICAL ERROR: GEMINI_API_KEY not found in environment variables.")
-    print("👉 If local: Check your .env file.")
-    print("👉 If on Render: Check 'Environment' tab in Dashboard.")
+    print("❌ CRITICAL ERROR: GEMINI_API_KEY not found.")
     client = None
 else:
-    # Print masked key to logs to confirm it loaded
     print(f"✅ API Key found: {api_key[:5]}********")
-    
-    # Initialize Client
     try:
         client = genai.Client(api_key=api_key)
     except Exception as e:
-        print(f"❌ Error initializing Google GenAI Client: {e}")
+        print(f"❌ Error initializing Client: {e}")
         client = None
 
 def process_image_to_base64(pil_image):
-    """Helper to convert PIL Image to Base64 string for HTML display"""
     buffered = io.BytesIO()
     pil_image.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -51,9 +43,8 @@ def index():
     prompt_text = ""
     
     if request.method == "POST":
-        # Safety Check: Ensure client is ready
         if not client:
-            flash("Server Error: API Key missing or invalid. Check server logs.", "error")
+            flash("Server Error: API Key missing.", "error")
             return render_template("index.html", generated_image=None, prompt="")
 
         action = request.form.get("action")
@@ -61,17 +52,17 @@ def index():
         
         try:
             if action == "generate":
-                # --- MODE 1: Text-to-Image (Generator) ---
+                # --- MODE 1: GENERATOR (Text-to-Image) ---
                 if not prompt_text:
                     flash("Please enter a prompt!", "error")
                 else:
-                    print(f"Generating with prompt: {prompt_text}")
+                    print(f"Generating: {prompt_text}")
                     
-                    # CORRECTED METHOD: generate_images (Plural)
+                    # FIX 1: Use plural 'generate_images' and 'GenerateImagesConfig'
                     response = client.models.generate_images(
                         model=MODEL_ID,
                         prompt=prompt_text,
-                        config=types.GenerateImageConfig(
+                        config=types.GenerateImagesConfig(
                             number_of_images=1,
                             aspect_ratio="1:1"
                         )
@@ -81,7 +72,7 @@ def index():
                         generated_image = process_image_to_base64(response.generated_images[0].image)
 
             elif action == "edit":
-                # --- MODE 2: Image+Text-to-Image (Editor) ---
+                # --- MODE 2: EDITOR (Image-to-Image) ---
                 uploaded_file = request.files.get("init_image")
                 
                 if not uploaded_file or uploaded_file.filename == '':
@@ -89,15 +80,15 @@ def index():
                 elif not prompt_text:
                     flash("Please describe the edit!", "error")
                 else:
-                    print(f"Editing image with prompt: {prompt_text}")
+                    print(f"Editing: {prompt_text}")
                     input_image = Image.open(uploaded_file).convert("RGB")
                     
-                    # CORRECTED METHOD: edit_images (Plural)
+                    # FIX 2: Use plural 'edit_images' and 'EditImagesConfig'
                     response = client.models.edit_images(
                         model=MODEL_ID,
                         prompt=prompt_text,
                         image=input_image,
-                        config=types.EditImageConfig(
+                        config=types.EditImagesConfig(
                             number_of_images=1,
                         )
                     )
@@ -106,7 +97,6 @@ def index():
                         generated_image = process_image_to_base64(response.generated_images[0].image)
 
         except Exception as e:
-            # Print full error to logs for debugging
             print(f"API CALL FAILED: {e}")
             flash(f"API Error: {str(e)}", "error")
 
