@@ -4,3 +4,4 @@ Pillow
 gunicorn
 huggingface_hub>=0.23.0
 requests
+stem
