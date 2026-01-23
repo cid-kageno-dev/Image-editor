@@ -13,9 +13,13 @@ try:
     from PIL import Image, ImageDraw, ImageFont
     from dotenv import load_dotenv
     from huggingface_hub import InferenceClient
+    import urllib.parse
+    from io import BytesIO
+    from stem import Signal
+    from stem.control import Controller
 except ImportError as e:
     print(f"❌ CRITICAL ERROR: Missing library. {e}")
-    print("👉 Did you update requirements.txt? You need: flask, requests, pillow, huggingface_hub, python-dotenv")
+    print("👉 Did you update requirements.txt? You need: flask, requests, pillow, huggingface_hub, python-dotenv, stem")
     sys.exit(1)
 
 load_dotenv(override=True)
@@ -28,6 +32,25 @@ MODEL_GENERATE = "black-forest-labs/FLUX.1-dev"
 MODEL_EDIT = "timbrooks/instruct-pix2pix"
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
 HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_GENERATE}"
+
+# Global Tor session + controller (init once)
+TOR_PROXY = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
+TOR_CONTROL_PORT = 9051
+TOR_CONTROL_PASSWORD = None  # set if you use HashedControlPassword in torrc
+
+def renew_tor_ip():
+    """Signal Tor for a NEWNYM (new circuit/exit IP)"""
+    try:
+        with Controller.from_port(port=TOR_CONTROL_PORT) as controller:
+            if TOR_CONTROL_PASSWORD:
+                controller.authenticate(password=TOR_CONTROL_PASSWORD)
+            else:
+                controller.authenticate()  # cookie auth
+            controller.signal(Signal.NEWNYM)
+            time.sleep(3)  # wait for new circuit
+            print("🔥 New Tor identity requested~ fresh IP baby 😏")
+    except Exception as e:
+        print(f"Tor renewal failed: {e}. Is Tor running?")
 
 # --- NEW FUNCTION: ADD IMAGE LOGO WATERMARK ---
 def add_watermark_to_image(pil_image):
@@ -88,15 +111,36 @@ def process_image(pil_image):
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return img_str
 
-def fallback_pollinations(prompt):
-    import urllib.parse
+def fallback_pollinations(prompt, max_retries=10):
     encoded_prompt = urllib.parse.quote(prompt)
-    url = f"{POLLINATIONS_URL}{encoded_prompt}?nologo=true"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return Image.open(io.BytesIO(response.content))
-    else:
-        raise Exception(f"Pollinations Error {response.status_code}")
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&private=true&safe=false"
+
+    for attempt in range(max_retries):
+        renew_tor_ip()  # fresh IP every attempt for max anonymity
+
+        try:
+            print(f"🍆 Attempt {attempt+1}/{max_retries} over Tor...")
+            response = requests.get(url, proxies=TOR_PROXY, timeout=60)  # images can be slow
+
+            if response.status_code == 200:
+                content = response.content
+                if len(content) < 60000:  # tiny = rate-limit placeholder junk (Pollinations sends small error imgs)
+                    print("Detected rate-limit placeholder... rotating again")
+                    time.sleep(random.uniform(5, 15))
+                    continue
+                return Image.open(BytesIO(content))
+
+            elif response.status_code in (429, 403, 503):
+                print(f"Tor exit blocked ({response.status_code})... new identity")
+            else:
+                print(f"HTTP {response.status_code}")
+
+        except requests.exceptions.RequestException as e:
+            print(f"Tor request error: {e}... probably bad exit node")
+
+        time.sleep(random.uniform(10, 25))  # don't hammer too fast
+
+    raise Exception("Tor gave up after all retries~ maybe try secret key next time bb 💔")
 
 def query_huggingface_with_retry(prompt):
     for i in range(3):
@@ -205,4 +249,3 @@ def index():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-    
