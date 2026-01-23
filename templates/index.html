@@ -5,82 +5,186 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nano Banana Studio</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Space Grotesk', sans-serif; }
+        
+        /* Custom Loader Animation */
+        .loader {
+            border-top-color: #FACC15; /* Yellow-400 */
+            -webkit-animation: spinner 1.5s linear infinite;
+            animation: spinner 1.5s linear infinite;
+        }
+        @keyframes spinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Glassmorphism utilities */
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+    </style>
 </head>
-<body class="bg-gray-900 text-white min-h-screen font-sans">
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center p-4 selection:bg-yellow-500 selection:text-black">
 
-    <div class="container mx-auto px-4 py-10 max-w-4xl">
-        <h1 class="text-4xl font-bold text-yellow-400 mb-2 text-center">🍌 Nano Banana Studio</h1>
-        <p class="text-gray-400 text-center mb-10">Powered by Gemini 2.5 Flash Image</p>
+    <header class="w-full max-w-5xl mb-8 flex flex-col md:flex-row items-center justify-between">
+        <div class="text-center md:text-left">
+            <h1 class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-yellow-300 to-yellow-600">
+                <i class="fa-solid fa-layer-group mr-2 text-yellow-400"></i>Nano Banana Studio
+            </h1>
+            <p class="text-gray-400 text-sm mt-1 tracking-wide">TOR-POWERED GENERATIVE SUITE</p>
+        </div>
+        <div class="mt-4 md:mt-0 px-4 py-1 rounded-full bg-gray-900 border border-gray-800 text-xs text-gray-500 flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> System Online
+        </div>
+    </header>
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                <div class="mb-6">
-                    {% for category, message in messages %}
-                        <div class="p-4 rounded bg-red-600 text-white text-center">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        {% endwith %}
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+    <div class="container max-w-5xl w-full grid grid-cols-1 lg:grid-cols-5 gap-6">
+        
+        <div class="lg:col-span-2 glass-panel rounded-2xl p-6 shadow-2xl relative overflow-hidden">
             
-            <div class="bg-gray-800 p-6 rounded-xl shadow-lg h-fit">
-                <div class="flex mb-6 border-b border-gray-700">
-                    <button onclick="switchTab('generate')" id="tab-gen" class="flex-1 py-2 text-yellow-400 border-b-2 border-yellow-400 font-bold">Generator</button>
-                    <button onclick="switchTab('edit')" id="tab-edit" class="flex-1 py-2 text-gray-400">Editor</button>
-                </div>
-
-                <form action="/" method="POST" enctype="multipart/form-data" id="main-form">
-                    <input type="hidden" name="action" id="action-input" value="generate">
-
-                    <div id="upload-section" class="hidden mb-4">
-                        <label class="block text-sm font-bold mb-2">Upload Source Image:</label>
-                        <input type="file" name="init_image" accept="image/*" class="w-full bg-gray-700 p-2 rounded border border-gray-600">
-                    </div>
-
-                    <div class="mb-4">
-                        <label class="block text-sm font-bold mb-2">Prompt / Instruction:</label>
-                        <textarea name="prompt" rows="4" class="w-full bg-gray-700 p-3 rounded border border-gray-600 focus:outline-none focus:border-yellow-400" placeholder="Describe the image you want...">{{ prompt }}</textarea>
-                    </div>
-
-                    <button type="submit" class="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded transition">
-                        Run Nano Banana 🍌
-                    </button>
-                </form>
+            <div class="flex bg-gray-900/50 p-1 rounded-lg mb-6 relative">
+                <button onclick="switchTab('generate')" id="tab-gen" class="flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 bg-yellow-500 text-black shadow-lg">
+                    <i class="fa-solid fa-wand-magic-sparkles mr-2"></i>Generate
+                </button>
+                <button onclick="switchTab('edit')" id="tab-edit" class="flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 text-gray-400 hover:text-white">
+                    <i class="fa-solid fa-paintbrush mr-2"></i>Edit
+                </button>
             </div>
 
-            <div class="bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col items-center justify-center min-h-[400px]">
-                {% if generated_image %}
-                    <img src="data:image/png;base64,{{ generated_image }}" alt="Generated Result" class="rounded shadow-lg max-w-full h-auto">
-                    <a href="data:image/png;base64,{{ generated_image }}" download="nano_banana_result.png" class="mt-4 text-sm text-yellow-400 hover:underline">Download Image</a>
-                {% else %}
-                    <div class="text-gray-500 text-center">
-                        <p class="text-6xl mb-4">🖼️</p>
-                        <p>Result will appear here</p>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="mb-4 space-y-2">
+                        {% for category, message in messages %}
+                            <div class="p-3 rounded border-l-4 text-sm {{ 'border-red-500 bg-red-900/20 text-red-200' if category == 'error' else 'border-green-500 bg-green-900/20 text-green-200' }}">
+                                {{ message }}
+                            </div>
+                        {% endfor %}
                     </div>
                 {% endif %}
+            {% endwith %}
+
+            <form action="/" method="POST" enctype="multipart/form-data" id="main-form" onsubmit="showLoader()">
+                <input type="hidden" name="action" id="action-input" value="generate">
+
+                <div id="upload-section" class="hidden mb-5 transition-all duration-300">
+                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Source Image</label>
+                    <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-yellow-500 hover:bg-gray-800 transition group">
+                        <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                            <i class="fa-solid fa-cloud-arrow-up text-2xl text-gray-500 group-hover:text-yellow-400 mb-2 transition"></i>
+                            <p class="text-sm text-gray-400 group-hover:text-gray-200" id="file-label">Click to upload image</p>
+                        </div>
+                        <input type="file" name="init_image" id="file-input" accept="image/*" class="hidden" onchange="updateFileName(this)">
+                    </label>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Prompt Instruction</label>
+                    <textarea 
+                        name="prompt" 
+                        required
+                        class="w-full bg-gray-900/80 border border-gray-700 text-white p-4 rounded-xl focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition resize-none h-40 text-sm leading-relaxed shadow-inner" 
+                        placeholder="A cyberpunk street in rain, neon lights, highly detailed...">{{ prompt }}</textarea>
+                </div>
+
+                <button type="submit" class="w-full group relative overflow-hidden bg-gradient-to-r from-yellow-500 to-yellow-600 text-black font-bold py-4 rounded-xl shadow-lg hover:shadow-yellow-500/20 transition-all transform hover:-translate-y-1">
+                    <span class="relative z-10 flex items-center justify-center gap-2">
+                        RUN PROCESS <i class="fa-solid fa-arrow-right group-hover:translate-x-1 transition"></i>
+                    </span>
+                    <div class="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                </button>
+            </form>
+
+            <div id="loading-overlay" class="absolute inset-0 bg-gray-900/90 backdrop-blur-sm z-50 hidden flex-col items-center justify-center">
+                <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-700 h-12 w-12 mb-4"></div>
+                <h3 class="text-yellow-400 font-bold animate-pulse">Processing...</h3>
+                <p class="text-xs text-gray-500 mt-2">Routing through secure nodes</p>
             </div>
         </div>
+
+        <div class="lg:col-span-3 glass-panel rounded-2xl p-2 flex items-center justify-center relative min-h-[500px]">
+            {% if generated_image %}
+                <div class="relative w-full h-full flex flex-col">
+                    <div class="relative group flex-grow rounded-xl overflow-hidden bg-black">
+                        <img src="data:image/png;base64,{{ generated_image }}" alt="Generated Result" class="w-full h-full object-contain">
+                        
+                        <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                            <a href="data:image/png;base64,{{ generated_image }}" download="nano_banana_result.png" class="px-6 py-3 bg-yellow-500 text-black font-bold rounded-full hover:bg-white transition flex items-center gap-2">
+                                <i class="fa-solid fa-download"></i> Save
+                            </a>
+                            <button onclick="window.open(this.parentElement.previousElementSibling.src)" class="px-6 py-3 bg-gray-800 text-white font-bold rounded-full hover:bg-gray-700 transition border border-gray-600">
+                                <i class="fa-solid fa-expand"></i> View
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="p-4 flex justify-between items-center text-xs text-gray-400 bg-gray-900/50 mt-2 rounded-lg">
+                        <span>Backend: <span class="text-yellow-500">{{ backend or 'Auto' }}</span></span>
+                        <span><i class="fa-solid fa-check-circle text-green-500"></i> Completed</span>
+                    </div>
+                </div>
+            {% else %}
+                <div class="text-center p-10 opacity-40">
+                    <div class="w-24 h-24 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-dashed border-gray-600">
+                        <i class="fa-solid fa-image text-3xl text-gray-500"></i>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-300">Ready to Create</h3>
+                    <p class="text-sm text-gray-500 mt-2 max-w-xs mx-auto">Enter a prompt or upload an image to start the Nano Banana engine.</p>
+                </div>
+            {% endif %}
+        </div>
+
     </div>
+
+    <footer class="mt-12 text-center text-gray-600 text-xs">
+        <p>Nano Banana Studio &copy; 2025 | Secure AI Research Tool</p>
+    </footer>
 
     <script>
         function switchTab(mode) {
             document.getElementById('action-input').value = mode;
-            document.getElementById('upload-section').classList.toggle('hidden', mode === 'generate');
-            
-            // Update Tab Styles
+            const uploadSection = document.getElementById('upload-section');
             const genTab = document.getElementById('tab-gen');
             const editTab = document.getElementById('tab-edit');
             
             if(mode === 'generate'){
-                genTab.className = "flex-1 py-2 text-yellow-400 border-b-2 border-yellow-400 font-bold";
-                editTab.className = "flex-1 py-2 text-gray-400";
+                uploadSection.classList.add('hidden');
+                
+                // Style Active Tab
+                genTab.className = "flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 bg-yellow-500 text-black shadow-lg";
+                genTab.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles mr-2"></i>Generate';
+                
+                // Style Inactive Tab
+                editTab.className = "flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 text-gray-400 hover:text-white hover:bg-gray-800";
             } else {
-                editTab.className = "flex-1 py-2 text-yellow-400 border-b-2 border-yellow-400 font-bold";
-                genTab.className = "flex-1 py-2 text-gray-400";
+                uploadSection.classList.remove('hidden');
+                
+                // Style Active Tab
+                editTab.className = "flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 bg-yellow-500 text-black shadow-lg";
+                editTab.innerHTML = '<i class="fa-solid fa-paintbrush mr-2"></i>Edit';
+                
+                // Style Inactive Tab
+                genTab.className = "flex-1 py-2 rounded-md text-sm font-bold transition-all duration-300 text-gray-400 hover:text-white hover:bg-gray-800";
             }
+        }
+
+        function updateFileName(input) {
+            const label = document.getElementById('file-label');
+            if (input.files && input.files.length > 0) {
+                label.innerHTML = `<span class="text-yellow-400 font-bold"><i class="fa-solid fa-check"></i> ${input.files[0].name}</span>`;
+            } else {
+                label.innerText = "Click to upload image";
+            }
+        }
+
+        function showLoader() {
+            document.getElementById('loading-overlay').classList.remove('hidden');
+            document.getElementById('loading-overlay').classList.add('flex');
         }
     </script>
 </body>
