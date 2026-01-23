@@ -4,248 +4,216 @@ import base64
 import time
 import random
 import sys
+import urllib.parse
+import socket
+from io import BytesIO
 
 # --- SAFETY CHECK: IMPORT LIBRARIES ---
 try:
     import requests
+    # Check for SOCKS support in requests (crucial for Tor)
+    try:
+        import socks
+    except ImportError:
+        print("❌ CRITICAL ERROR: 'pysocks' is missing.")
+        print("👉 Please run: pip install pysocks")
+        sys.exit(1)
+
     from flask import Flask, render_template, request, flash
-    # We need Image, PIL.Image class itself, and resampling for high quality resizing
     from PIL import Image, ImageDraw, ImageFont
     from dotenv import load_dotenv
     from huggingface_hub import InferenceClient
-    import urllib.parse
-    from io import BytesIO
     from stem import Signal
     from stem.control import Controller
 except ImportError as e:
     print(f"❌ CRITICAL ERROR: Missing library. {e}")
-    print("👉 Did you update requirements.txt? You need: flask, requests, pillow, huggingface_hub, python-dotenv, stem")
+    print("👉 Did you update requirements.txt? You need: flask, requests, pillow, huggingface_hub, python-dotenv, stem, pysocks")
     sys.exit(1)
 
+# Load environment variables
 load_dotenv(override=True)
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_default_key")
 
 # --- CONFIGURATION ---
 MODEL_GENERATE = "black-forest-labs/FLUX.1-dev"
 MODEL_EDIT = "timbrooks/instruct-pix2pix"
-POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
 HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_GENERATE}"
 
-# Global Tor session + controller (init once)
-TOR_PROXY = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
-TOR_CONTROL_PORT = 9051
-TOR_CONTROL_PASSWORD = None  # set if you use HashedControlPassword in torrc
+# --- TOR CONFIGURATION (AUTO-DETECT) ---
+def get_tor_ports():
+    """Detects if Tor is running on port 9050 (Service) or 9150 (Browser)."""
+    for port in [9050, 9150]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('127.0.0.1', port)) == 0:
+                print(f"✅ Tor detected on port {port}")
+                return port, port + 1  # Control port is usually Proxy Port + 1 (9051 or 9151)
+    return None, None
 
+TOR_PROXY_PORT, TOR_CONTROL_PORT = get_tor_ports()
+
+if TOR_PROXY_PORT:
+    TOR_PROXY = {
+        'http': f'socks5h://127.0.0.1:{TOR_PROXY_PORT}',
+        'https': f'socks5h://127.0.0.1:{TOR_PROXY_PORT}'
+    }
+else:
+    print("⚠️ WARNING: Tor not detected on 9050 or 9150. Fallback mode will fail.")
+    TOR_PROXY = None
+
+TOR_CONTROL_PASSWORD = None  # Set this if you configured a HashedControlPassword
+
+# --- HELPER: RENEW TOR IP ---
 def renew_tor_ip():
-    """Signal Tor for a NEWNYM (new circuit/exit IP)"""
+    """Signal Tor for a NEWNYM (new circuit/exit IP)."""
+    if not TOR_CONTROL_PORT:
+        return
+
     try:
         with Controller.from_port(port=TOR_CONTROL_PORT) as controller:
             if TOR_CONTROL_PASSWORD:
                 controller.authenticate(password=TOR_CONTROL_PASSWORD)
             else:
-                controller.authenticate()  # cookie auth
+                controller.authenticate()  # Cookie authentication
             controller.signal(Signal.NEWNYM)
-            time.sleep(3)  # wait for new circuit
-            print("🔥 New Tor identity requested~ fresh IP baby 😏")
+            time.sleep(1) # Brief pause for circuit build
+            print(f"🔥 Tor IP Rotated (Control Port {TOR_CONTROL_PORT})")
     except Exception as e:
-        print(f"Tor renewal failed: {e}. Is Tor running?")
+        # Don't crash the app if controller fails (permissions/auth issues)
+        print(f"⚠️ Tor Control Error: {e}. continuing with current IP...")
 
-# --- NEW FUNCTION: ADD IMAGE LOGO WATERMARK ---
-def add_watermark_to_image(pil_image):
-    """Adds a transparent logo image to the bottom right corner."""
-    # 1. Convert base image to RGBA for alpha compositing
-    pil_image = pil_image.convert("RGBA")
-    base_width, base_height = pil_image.size
-
-    # 2. Find path to the logo in the 'static' folder
-    logo_path = os.path.join(app.root_path, 'static', 'watermark_logo.png')
-    
-    try:
-        # Load logo and ensure it's RGBA
-        logo = Image.open(logo_path).convert("RGBA")
-    except FileNotFoundError:
-        print(f"⚠️ Warning: Logo not found at {logo_path}. Returning non-watermarked image.")
-        return pil_image
-
-    # 3. Resize logo dynamically
-    # We want the logo to be about 12% of the image's total height
-    target_height = int(base_height * 0.12)
-    # Ensure it doesn't get too tiny on small images
-    target_height = max(target_height, 30) 
-    
-    # Calculate width to maintain aspect ratio
-    aspect_ratio = logo.width / logo.height
-    target_width = int(target_height * aspect_ratio)
-    
-    # Perform high-quality resize
-    logo = logo.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-    # 4. Calculate Position (Bottom Right with 2% padding)
-    padding = int(base_height * 0.02)
-    x = base_width - logo.width - padding
-    y = base_height - logo.height - padding
-
-    # 5. Paste the logo
-    # Using the logo itself as the 'mask' ensures transparent areas remain transparent
-    pil_image.paste(logo, (x, y), mask=logo)
-
-    return pil_image
-
-# --- EXISTING HELPER FUNCTIONS ---
-def get_random_hf_key():
-    all_keys = []
-    for env_var_name, value in os.environ.items():
-        if env_var_name.startswith("HF_API_KEY"):
-            if value and value.strip():
-                all_keys.append(value.strip())
-    
-    if not all_keys:
-        return None
-    return random.choice(all_keys)
-
+# --- HELPER: IMAGE PROCESSING ---
 def process_image(pil_image):
     buffered = io.BytesIO()
     pil_image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return img_str
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-def fallback_pollinations(prompt, max_retries=10):
-    encoded_prompt = urllib.parse.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&private=true&safe=false"
+def add_watermark_to_image(pil_image):
+    try:
+        pil_image = pil_image.convert("RGBA")
+        base_width, base_height = pil_image.size
+        logo_path = os.path.join(app.root_path, 'static', 'watermark_logo.png')
+        
+        logo = Image.open(logo_path).convert("RGBA")
 
-    for attempt in range(max_retries):
-        renew_tor_ip()  # fresh IP every attempt for max anonymity
+        # Resize to ~12% of height
+        target_height = max(int(base_height * 0.12), 30)
+        aspect_ratio = logo.width / logo.height
+        target_width = int(target_height * aspect_ratio)
+        
+        logo = logo.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-        try:
-            print(f"🍆 Attempt {attempt+1}/{max_retries} over Tor...")
-            response = requests.get(url, proxies=TOR_PROXY, timeout=60)  # images can be slow
+        # Bottom Right Padding
+        padding = int(base_height * 0.02)
+        x = base_width - logo.width - padding
+        y = base_height - logo.height - padding
 
-            if response.status_code == 200:
-                content = response.content
-                if len(content) < 60000:  # tiny = rate-limit placeholder junk (Pollinations sends small error imgs)
-                    print("Detected rate-limit placeholder... rotating again")
-                    time.sleep(random.uniform(5, 15))
-                    continue
-                return Image.open(BytesIO(content))
+        pil_image.paste(logo, (x, y), mask=logo)
+        return pil_image
+    except Exception:
+        return pil_image # Fail silently, return original
 
-            elif response.status_code in (429, 403, 503):
-                print(f"Tor exit blocked ({response.status_code})... new identity")
-            else:
-                print(f"HTTP {response.status_code}")
+def get_random_hf_key():
+    all_keys = [v for k, v in os.environ.items() if k.startswith("HF_API_KEY") and v.strip()]
+    return random.choice(all_keys) if all_keys else None
 
-        except requests.exceptions.RequestException as e:
-            print(f"Tor request error: {e}... probably bad exit node")
-
-        time.sleep(random.uniform(10, 25))  # don't hammer too fast
-
-    raise Exception("Tor gave up after all retries~ maybe try secret key next time bb 💔")
-
+# --- BACKEND 1: HUGGING FACE ---
 def query_huggingface_with_retry(prompt):
     for i in range(3):
         current_key = get_random_hf_key()
-        if not current_key:
-            raise Exception("MISSING_KEYS")
+        if not current_key: raise Exception("MISSING_KEYS")
 
         headers = {"Authorization": f"Bearer {current_key}"}
-        payload = {"inputs": prompt}
-        
         try:
-            print(f"🔄 Attempt {i+1}/3 with key ...{current_key[-4:]}")
-            response = requests.post(HF_API_URL, headers=headers, json=payload)
+            print(f"🔄 HF Attempt {i+1}/3...")
+            response = requests.post(HF_API_URL, headers=headers, json={"inputs": prompt}, timeout=30)
             
-            if response.status_code == 200:
-                return response.content
-            elif response.status_code == 503:
-                time.sleep(5)
-                continue
-            elif response.status_code == 429:
-                print("⚠️ Rate limit. Switching keys...")
-                continue
-            else:
-                print(f"⚠️ HF Error: {response.text}")
+            if response.status_code == 200: return response.content
+            elif response.status_code == 503: time.sleep(5); continue
+            elif response.status_code == 429: continue
         except Exception as e:
-            print(f"Connection Error: {e}")
+            print(f"❌ HF Conn Error: {e}")
             
-    raise Exception("All retries failed.")
+    raise Exception("HF_FAILED")
 
-# --- MAIN ROUTE ---
+# --- BACKEND 2: POLLINATIONS (TOR FALLBACK) ---
+def fallback_pollinations(prompt):
+    if not TOR_PROXY: raise Exception("Tor not found")
+    
+    encoded = urllib.parse.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?nologo=true&private=true&safe=false"
+
+    for attempt in range(5):
+        renew_tor_ip()
+        try:
+            print(f"🍆 Pollinations (Tor) Attempt {attempt+1}...")
+            # increased timeout for Tor latency
+            response = requests.get(url, proxies=TOR_PROXY, timeout=45) 
+
+            if response.status_code == 200:
+                if len(response.content) < 4000: # Filter fake error images
+                    time.sleep(2)
+                    continue
+                return Image.open(BytesIO(response.content))
+        except Exception as e:
+            print(f"❌ Tor Error: {e}")
+        
+        time.sleep(3) # Wait before retry
+
+    raise Exception("POLLINATIONS_FAILED")
+
+# --- ROUTES ---
 @app.route("/", methods=["GET", "POST"])
 def index():
     generated_image = None
     prompt_text = ""
     backend_used = ""
 
-    try:
-        if request.method == "POST":
-            prompt_text = request.form.get("prompt")
-            action = request.form.get("action")
-            
-            if not prompt_text:
-                flash("Please enter a prompt!", "error")
-            else:
-                # --- ACTION: GENERATE ---
+    if request.method == "POST":
+        prompt_text = request.form.get("prompt")
+        action = request.form.get("action")
+        
+        if prompt_text:
+            try:
+                # GENERATE
                 if action == "generate":
                     try:
-                        image_bytes = query_huggingface_with_retry(prompt_text)
-                        image = Image.open(io.BytesIO(image_bytes))
-                        
-                        # 👉 ADD LOGO WATERMARK
-                        image = add_watermark_to_image(image)
-                        
-                        generated_image = process_image(image)
+                        img_bytes = query_huggingface_with_retry(prompt_text)
+                        image = Image.open(io.BytesIO(img_bytes))
                         backend_used = "Hugging Face (FLUX.1)"
-                        
-                    except Exception as e:
-                        if "MISSING_KEYS" in str(e):
-                            flash("❌ No API Keys found! Add HF_API_KEY to Environment.", "error")
-                        else:
-                            # Try Fallback
-                            try:
-                                print("🍌 Switching to Pollinations...")
-                                image = fallback_pollinations(prompt_text)
+                    except:
+                        # Fallback
+                        try:
+                            image = fallback_pollinations(prompt_text)
+                            backend_used = "Pollinations (Tor)"
+                            flash("Primary busy. Switched to Tor Fallback.", "info")
+                        except Exception as e:
+                            flash(f"Generation Failed: {e}", "error")
+                            image = None
 
-                                # 👉 ADD LOGO WATERMARK TO FALLBACK
-                                image = add_watermark_to_image(image)
-
-                                generated_image = process_image(image)
-                                backend_used = "Pollinations.ai (Fallback)"
-                                flash("Primary busy. Used Fallback.", "info")
-                            except Exception as e_poll:
-                                flash(f"Failed. Error: {e_poll}", "error")
-
-                # --- ACTION: EDIT ---
+                # EDIT
                 elif action == "edit":
-                    uploaded_file = request.files.get("init_image")
-                    if not uploaded_file:
-                        flash("Upload an image!", "error")
+                    f = request.files.get("init_image")
+                    key = get_random_hf_key()
+                    if f and key:
+                        client = InferenceClient(token=key)
+                        image = client.image_to_image(prompt=prompt_text, image=Image.open(f).convert("RGB"), model=MODEL_EDIT)
+                        backend_used = "HF InstructPix2Pix"
                     else:
-                        current_key = get_random_hf_key()
-                        if not current_key:
-                             flash("❌ Editing requires an API Key.", "error")
-                        else:
-                            client = InferenceClient(token=current_key)
-                            input_image = Image.open(uploaded_file).convert("RGB")
-                            
-                            image = client.image_to_image(
-                                prompt=prompt_text, 
-                                image=input_image, 
-                                model=MODEL_EDIT,
-                                guidance_scale=7.5, image_guidance_scale=1.5
-                            )
+                        flash("Missing Image or API Key for Edit", "error")
+                        image = None
 
-                            # 👉 ADD LOGO WATERMARK TO EDIT
-                            image = add_watermark_to_image(image)
+                if image:
+                    image = add_watermark_to_image(image)
+                    generated_image = process_image(image)
 
-                            generated_image = process_image(image)
-                            backend_used = "Hugging Face (InstructPix2Pix)"
-
-    except Exception as e:
-        print(f"CRITICAL APP CRASH AVOIDED: {e}")
-        flash(f"System Error: {str(e)}", "error")
+            except Exception as e:
+                flash(f"System Error: {e}", "error")
 
     return render_template("index.html", generated_image=generated_image, prompt=prompt_text, backend=backend_used)
 
 if __name__ == "__main__":
+    if not os.path.exists('static'): os.makedirs('static')
     app.run(debug=True, port=5000)
+    
