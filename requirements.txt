@@ -1,8 +1,8 @@
-Flask
-python-dotenv
-Pillow
-gunicorn
-huggingface_hub>=0.23.0
+flask
 requests
+pillow
+python-dotenv
+huggingface_hub
 stem
 pysocks
+gunicorn
